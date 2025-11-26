@@ -1,0 +1,11 @@
+[package]
+name = "load-calculation"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+csv = "1.2"
+serde = { version = "1.0", features = ["derive"] }
+regex = "1.10" # Used for parsing the two different input formats
+lazy_static = "1.4" # Used for lazy initialization of the regex
