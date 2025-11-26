@@ -1,0 +1,43 @@
+name: Release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - "v*" # 当推送以 v 开头的 tag 时触发 (如 v0.1.0)
+
+jobs:
+  build:
+    name: Build for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: lc
+            asset_name: lc-linux-amd64
+          - os: windows-latest
+            artifact_name: lc.exe # Windows 编译出的默认文件名
+            asset_name: lc-windows-amd64.exe
+          - os: macos-latest
+            artifact_name: lc
+            asset_name: lc-macos-amd64
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Build
+      run: cargo build --release --locked
+
+    - name: Upload Binary
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: target/release/${{ matrix.artifact_name }}
+        asset_name: ${{ matrix.asset_name }}
+        tag: ${{ github.ref }}
