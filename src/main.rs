@@ -3,9 +3,13 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use regex::Regex;
 use lazy_static::lazy_static;
+// 引入 comfy_table
+use comfy_table::{Table, presets, Attribute, Cell, CellAlignment};
 
+// --- 0. 嵌入数据 ---
 const CSV_DATA: &str = include_str!("../data/equipmentInfo.csv");
 
+// --- 1. 增强版反序列化助手 ---
 fn deserialize_f64_custom<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -36,6 +40,7 @@ where
     }
 }
 
+// --- 2. 数据模型 ---
 #[derive(Debug, Deserialize, Clone)]
 pub struct MachineData {
     #[serde(rename = "model number")]
@@ -51,7 +56,6 @@ pub struct MachineData {
     pub btu_95_min: Option<f64>,
 
     // Heating points for interpolation
-    
     #[serde(rename = "Btu@lowest max", deserialize_with = "deserialize_f64_custom")]
     pub btu_lowest_max: Option<f64>,
 
@@ -113,6 +117,7 @@ impl MachineData {
     }
 }
 
+// --- 3. 结果汇总结构 ---
 #[derive(Debug, Default)]
 struct CalculationTotals {
     total_btu_95_min: f64,
@@ -122,6 +127,7 @@ struct CalculationTotals {
     total_btu_design_max: f64,
 }
 
+// --- CLI 定义 ---
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None, name = "lc")]
 pub struct Cli {
@@ -129,16 +135,14 @@ pub struct Cli {
     pub machines: Vec<String>,
 
     /// Design temperature for heating calculation
-    #[arg(short = 't', long, default_value_t = 17.0)]
+    #[arg(short = 't', long, default_value_t = 17.0, env = "LC_DESIGN_TEMP")]
     pub design_temp: f64,
 }
 
-
+// --- 核心逻辑 ---
 fn parse_user_input(inputs: &[String]) -> Result<HashMap<String, u32>, String> {
     lazy_static! {
-        // regex 1: [model]x[qty]
         static ref MODEL_QTY_RE: Regex = Regex::new(r"^(.+)x(\d+)$").unwrap();
-        // regex 2: [code][qty]
         static ref CODE_QTY_RE: Regex = Regex::new(r"^([a-zA-Z0-9]+?)(\d+)$").unwrap();
     }
     
@@ -165,7 +169,6 @@ fn parse_user_input(inputs: &[String]) -> Result<HashMap<String, u32>, String> {
         };
 
         let count: u32 = count_str.parse().map_err(|_| "Qty must be integer")?;
-        
         *input_map.entry(identifier).or_insert(0) += count;
     }
     Ok(input_map)
@@ -185,14 +188,7 @@ fn load_machine_data() -> Result<HashMap<String, MachineData>, Box<dyn std::erro
     Ok(data_map)
 }
 
-fn print_separator(widths: &[usize]) {
-    let mut line = String::from("+");
-    for w in widths {
-        line.push_str(&"-".repeat(*w + 2));
-        line.push('+');
-    }
-    println!("{}", line);
-}
+// --- 修改后的计算和打印逻辑 ---
 
 fn perform_calculation(
     user_input: &HashMap<String, u32>,
@@ -201,11 +197,22 @@ fn perform_calculation(
 ) -> CalculationTotals {
     let mut totals = CalculationTotals::default();
     
-    let col_widths = vec![13, 5, 12, 10, 10];
+    // 1. 初始化表格
+    let mut table = Table::new();
+    // 使用 UTF8_FULL 预设，显示漂亮的边框。如果您在某些旧 Windows 终端乱码，可以改用 ASCII_FULL
+    table.load_preset(presets::UTF8_FULL); 
+    
+    // 设置表头
     let header_design_label = format!("Btu@{} max", design_temp);
+    table.set_header(vec![
+        Cell::new("Model").add_attribute(Attribute::Bold),
+        Cell::new("Qty").add_attribute(Attribute::Bold),
+        Cell::new("AHRI#").add_attribute(Attribute::Bold),
+        Cell::new("Btu@95 min").add_attribute(Attribute::Bold),
+        Cell::new(&header_design_label).add_attribute(Attribute::Bold),
+    ]);
 
-    // 1. 预聚合 (Normalization & Aggregation)
-    // 将输入统一解析为 Model Number，并累加数量
+    // 2. 预聚合逻辑
     let mut canonical_counts: HashMap<String, u32> = HashMap::new();
     let mut not_found_inputs: Vec<(&String, &u32)> = Vec::new();
 
@@ -217,16 +224,9 @@ fn perform_calculation(
         }
     }
 
-    print_separator(&col_widths);
-    println!(
-        "| {:^13} | {:^5} | {:^12} | {:^10} | {:^10} |", 
-        "Model", "qty", "AHRI#", "Btu@95 min", header_design_label
-    );
-    print_separator(&col_widths);
-
-    // 2. 遍历聚合后的型号进行计算和输出
+    // 3. 排序并计算
     let mut sorted_models: Vec<_> = canonical_counts.into_iter().collect();
-    sorted_models.sort_by(|a, b| a.0.cmp(&b.0)); // 按型号名称排序
+    sorted_models.sort_by(|a, b| a.0.cmp(&b.0));
 
     for (model_number, count) in sorted_models {
         if let Some(data) = machine_data.get(&model_number) {
@@ -243,49 +243,59 @@ fn perform_calculation(
             totals.total_btu_17_max += data.btu_17_max.unwrap_or(0.0) * qty;
             totals.total_btu_17_rated += data.btu_17_rated.unwrap_or(0.0) * qty;
 
-            println!(
-                "| {:^13} | {:^5} | {:^12} | {:^10.0} | {:^10.0} |", 
-                data.model_number, 
-                count, 
-                ahri,
-                btu_95_min * qty, 
-                btu_design_max * qty
-            );
+            // 添加行
+            table.add_row(vec![
+                Cell::new(&data.model_number),
+                Cell::new(count).set_alignment(CellAlignment::Center), // 数量居中
+                Cell::new(&ahri).set_alignment(CellAlignment::Center),
+                Cell::new(format!("{:.0}", btu_95_min * qty)).set_alignment(CellAlignment::Right),
+                Cell::new(format!("{:.0}", btu_design_max * qty)).set_alignment(CellAlignment::Right),
+            ]);
         }
     }
 
-    // 3. 输出未找到的项目
+    // 4. 处理未找到的项目
     for (identifier, count) in not_found_inputs {
-        println!("| {:^13} | {:^5} | {:^12} | {:^10} | {:^10} |", identifier, count, "NOT FOUND", "-", "-");
+        table.add_row(vec![
+            Cell::new(identifier).add_attribute(Attribute::Dim), // 变暗显示
+            Cell::new(count).set_alignment(CellAlignment::Center),
+            Cell::new("NOT FOUND").set_alignment(CellAlignment::Center),
+            Cell::new("-"),
+            Cell::new("-"),
+        ]);
     }
 
-    print_separator(&col_widths);
+    // 打印主表
+    println!("{table}");
+    
     totals
 }
 
 fn print_summary_table(totals: &CalculationTotals, design_temp: f64) {
-    let widths = vec![13, 8];
-    
-    println!();
-    print_separator(&widths);
-    
-    let print_row = |label: &str, value: f64, is_temp: bool| {
+    let mut table = Table::new();
+    table.load_preset(presets::UTF8_FULL);
+
+    // 辅助闭包：添加行
+    let mut add_summary_row = |label: &str, value: f64, is_temp: bool| {
         let val_str = if is_temp {
             format!("{:.0}", value)
         } else {
             format!("{:.0}", value)
         };
-        println!("| {:<13} | {:>8} |", label, val_str);
+        table.add_row(vec![
+            Cell::new(label),
+            Cell::new(val_str).set_alignment(CellAlignment::Right),
+        ]);
     };
 
-    print_row("Btu @95 min", totals.total_btu_95_min, false);
-    print_row("Btu @5  max", totals.total_btu_5_max, false);
-    print_row("Btu @17 max", totals.total_btu_17_max, false);
-    print_row("Btu @17 rated", totals.total_btu_17_rated, false);
-    print_row(&format!("Btu @{} max", design_temp), totals.total_btu_design_max, false);
-    print_row("Design Temp", design_temp, true);
+    add_summary_row("Btu @95 min", totals.total_btu_95_min, false);
+    add_summary_row("Btu @5  max", totals.total_btu_5_max, false);
+    add_summary_row("Btu @17 max", totals.total_btu_17_max, false);
+    add_summary_row("Btu @17 rated", totals.total_btu_17_rated, false);
+    add_summary_row(&format!("Btu @{} max", design_temp), totals.total_btu_design_max, false);
+    add_summary_row("Design Temp", design_temp, true);
 
-    print_separator(&widths);
+    println!("\n{table}");
 }
 
 fn print_recommendation(totals: &CalculationTotals) {
@@ -293,7 +303,7 @@ fn print_recommendation(totals: &CalculationTotals) {
     let mid_val = max_val / 1.1;
     let min_val = max_val / 1.2;
 
-    println!("recommend range: {:.0} - {:.0} - {:.0}", min_val, mid_val, max_val);
+    println!("\nRecommend range: {:.0} - {:.0} - {:.0}", min_val, mid_val, max_val);
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
