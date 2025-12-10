@@ -3,8 +3,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use regex::Regex;
 use lazy_static::lazy_static;
-// 引入 comfy_table
-use comfy_table::{Table, presets, Attribute, Cell, CellAlignment};
+use comfy_table::{Table, presets, Attribute, Cell, CellAlignment, Color};
 
 // --- 0. 嵌入数据 ---
 const CSV_DATA: &str = include_str!("../data/equipmentInfo.csv");
@@ -131,12 +130,16 @@ struct CalculationTotals {
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None, name = "lc")]
 pub struct Cli {
-    #[arg(required = true, help = "机器列表 (e.g. KM18H5Ox1)")]
+    #[arg(required = true, help = "ModelNumberxQty or MachineCodeQty (e.g. KM18X6Ox1 or 18M1)")]
     pub machines: Vec<String>,
 
     /// Design temperature for heating calculation
     #[arg(short = 't', long, default_value_t = 17.0, env = "LC_DESIGN_TEMP")]
     pub design_temp: f64,
+
+    /// Floor area in square feet (optional). If provided, calculates BHL/SF and BH/SF.
+    #[arg(short = 'a', long)]
+    pub area: Option<f64>,
 }
 
 // --- 核心逻辑 ---
@@ -188,8 +191,6 @@ fn load_machine_data() -> Result<HashMap<String, MachineData>, Box<dyn std::erro
     Ok(data_map)
 }
 
-// --- 修改后的计算和打印逻辑 ---
-
 fn perform_calculation(
     user_input: &HashMap<String, u32>,
     machine_data: &HashMap<String, MachineData>,
@@ -197,12 +198,9 @@ fn perform_calculation(
 ) -> CalculationTotals {
     let mut totals = CalculationTotals::default();
     
-    // 1. 初始化表格
     let mut table = Table::new();
-    // 使用 UTF8_FULL 预设，显示漂亮的边框。如果您在某些旧 Windows 终端乱码，可以改用 ASCII_FULL
     table.load_preset(presets::UTF8_FULL); 
     
-    // 设置表头
     let header_design_label = format!("Btu@{} max", design_temp);
     table.set_header(vec![
         Cell::new("Model").add_attribute(Attribute::Bold),
@@ -212,7 +210,6 @@ fn perform_calculation(
         Cell::new(&header_design_label).add_attribute(Attribute::Bold),
     ]);
 
-    // 2. 预聚合逻辑
     let mut canonical_counts: HashMap<String, u32> = HashMap::new();
     let mut not_found_inputs: Vec<(&String, &u32)> = Vec::new();
 
@@ -224,7 +221,6 @@ fn perform_calculation(
         }
     }
 
-    // 3. 排序并计算
     let mut sorted_models: Vec<_> = canonical_counts.into_iter().collect();
     sorted_models.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -243,10 +239,9 @@ fn perform_calculation(
             totals.total_btu_17_max += data.btu_17_max.unwrap_or(0.0) * qty;
             totals.total_btu_17_rated += data.btu_17_rated.unwrap_or(0.0) * qty;
 
-            // 添加行
             table.add_row(vec![
                 Cell::new(&data.model_number),
-                Cell::new(count).set_alignment(CellAlignment::Center), // 数量居中
+                Cell::new(count).set_alignment(CellAlignment::Center),
                 Cell::new(&ahri).set_alignment(CellAlignment::Center),
                 Cell::new(format!("{:.0}", btu_95_min * qty)).set_alignment(CellAlignment::Right),
                 Cell::new(format!("{:.0}", btu_design_max * qty)).set_alignment(CellAlignment::Right),
@@ -254,10 +249,9 @@ fn perform_calculation(
         }
     }
 
-    // 4. 处理未找到的项目
     for (identifier, count) in not_found_inputs {
         table.add_row(vec![
-            Cell::new(identifier).add_attribute(Attribute::Dim), // 变暗显示
+            Cell::new(identifier).add_attribute(Attribute::Dim),
             Cell::new(count).set_alignment(CellAlignment::Center),
             Cell::new("NOT FOUND").set_alignment(CellAlignment::Center),
             Cell::new("-"),
@@ -265,7 +259,6 @@ fn perform_calculation(
         ]);
     }
 
-    // 打印主表
     println!("{table}");
     
     totals
@@ -275,7 +268,6 @@ fn print_summary_table(totals: &CalculationTotals, design_temp: f64) {
     let mut table = Table::new();
     table.load_preset(presets::UTF8_FULL);
 
-    // 辅助闭包：添加行
     let mut add_summary_row = |label: &str, value: f64, is_temp: bool| {
         let val_str = if is_temp {
             format!("{:.0}", value)
@@ -306,6 +298,84 @@ fn print_recommendation(totals: &CalculationTotals) {
     println!("\nRecommend range: {:.0} - {:.0} - {:.0}", min_val, mid_val, max_val);
 }
 
+// --- 新增：面积分析函数 ---
+fn print_area_metrics(area: f64, totals: &CalculationTotals, design_temp: f64) {
+    // 1. 计算指标
+    // BHL/SF (Residential) = Max Btu @ Design Temp / Area
+    let bhl_sf = if area > 0.0 { totals.total_btu_design_max / area } else { 0.0 };
+    
+    // BH/SF (SMB) = Rated Btu @ 17 / Area
+    let bh_sf = if area > 0.0 { totals.total_btu_17_rated / area } else { 0.0 };
+
+    println!("\n --- BHL/SF or BH/SF Analysis ({:.0} sq ft) ---", area);
+    
+    // 打印用户计算出的数值
+    let mut result_table = Table::new();
+    result_table.load_preset(presets::UTF8_FULL);
+    result_table.set_header(vec!["Metric", "Formula", "Your Value"]);
+    
+    result_table.add_row(vec![
+        Cell::new("Residential BHL/SF").fg(Color::Green).add_attribute(Attribute::Bold),
+        Cell::new(format!("Max Btu @ {} / SF", design_temp)),
+        Cell::new(format!("{:.2}", bhl_sf)).add_attribute(Attribute::Bold),
+    ]);
+    result_table.add_row(vec![
+        Cell::new("SMB BH/SF").fg(Color::Cyan).add_attribute(Attribute::Bold),
+        Cell::new("Rated Btu @ 17 / SF"),
+        Cell::new(format!("{:.2}", bh_sf)).add_attribute(Attribute::Bold),
+    ]);
+    println!("{result_table}");
+
+    // 2. 打印 Residential 参考表
+    println!("\n🏠 Residential Reference (BHL/SF)");
+    let mut res_table = Table::new();
+    res_table.load_preset(presets::UTF8_FULL);
+    res_table.set_header(vec!["Year Built", "Min BHL/SF", "Max BHL/SF"]);
+    
+    // 这里是示例参考数据，您可以根据实际业务标准修改
+    let res_data = vec![
+        ("Pre-1945 (Uninsulated)", "30", "45"),
+        ("Pre-1945 (Insulated)", "25", "45"),
+        ("Pre-1979", "20", "35"),
+        ("1979-2006", "15", "30"),
+        ("2007 or later", "15", "25"),
+    ];
+
+    for (year, min, max) in res_data {
+        res_table.add_row(vec![year, min, max]);
+    }
+    println!("{res_table}");
+
+    // 3. 打印 SMB 参考表
+    println!("\n🏢 SMB Reference (BH/SF)");
+    let mut smb_table = Table::new();
+    smb_table.load_preset(presets::UTF8_FULL);
+    smb_table.set_header(vec!["Building Sector", "Min BH/SF", "Max BH/SF"]);
+
+    // 示例参考数据
+    let smb_data = vec![
+        ("Restaurant", "20", "30"),
+        ("Big Box Retail", "15", "35"),
+        ("Small Retail", "20", "40"),
+        ("Schools", "18", "35"),
+        ("Offices", "15", "30"),
+        ("Religious Institutions", "20", "35"),
+        ("Grocery Stores", "20", "35"),
+        ("Auto Repair", "25", "45"),
+        ("Hospital and Healthcare", "20", "40"),
+        ("Assembly", "20", "30"),
+        ("Fitness Centers", "20", "35"),
+        ("Warehouses", "8", "20"),
+        ("Light Industrial", "25", "50"),
+        ("Hotels", "15", "30"),
+    ];
+
+    for (sector, min, max) in smb_data {
+        smb_table.add_row(vec![sector, min, max]);
+    }
+    println!("{smb_table}");
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     
@@ -316,6 +386,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     print_summary_table(&totals, cli.design_temp);
     print_recommendation(&totals);
+
+    // 如果用户输入了面积参数，则打印额外分析
+    if let Some(area) = cli.area {
+        print_area_metrics(area, &totals, cli.design_temp);
+    }
 
     Ok(())
 }
