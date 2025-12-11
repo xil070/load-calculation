@@ -5,10 +5,8 @@ use regex::Regex;
 use lazy_static::lazy_static;
 use comfy_table::{Table, presets, Attribute, Cell, CellAlignment, Color};
 
-// --- 0. 嵌入数据 ---
 const CSV_DATA: &str = include_str!("../data/equipmentInfo.csv");
 
-// --- 1. 增强版反序列化助手 ---
 fn deserialize_f64_custom<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -39,7 +37,6 @@ where
     }
 }
 
-// --- 2. 数据模型 ---
 #[derive(Debug, Deserialize, Clone)]
 pub struct MachineData {
     #[serde(rename = "model number")]
@@ -72,6 +69,16 @@ pub struct MachineData {
 
     #[serde(rename = "Btu@47max", deserialize_with = "deserialize_f64_custom")]
     pub btu_47_max: Option<f64>,
+
+    // For Loan
+    #[serde(rename = "Btu@95rated", deserialize_with = "deserialize_f64_custom")]
+    pub btu_95_rated: Option<f64>,
+
+    #[serde(rename = "HSPF", deserialize_with = "deserialize_f64_custom")]
+    pub hspf: Option<f64>,
+
+    #[serde(rename = "SEER", deserialize_with = "deserialize_f64_custom")]
+    pub seer: Option<f64>,
 }
 
 impl MachineData {
@@ -116,7 +123,6 @@ impl MachineData {
     }
 }
 
-// --- 3. 结果汇总结构 ---
 #[derive(Debug, Default)]
 struct CalculationTotals {
     total_btu_95_min: f64,
@@ -124,9 +130,13 @@ struct CalculationTotals {
     total_btu_17_max: f64,
     total_btu_17_rated: f64,
     total_btu_design_max: f64,
+
+    total_btu_95_rated: f64,
+    weighted_hspf_sum: f64,
+    weighted_seer_sum: f64,
 }
 
-// --- CLI 定义 ---
+// --- CLI Def ---
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None, name = "lc")]
 pub struct Cli {
@@ -140,9 +150,12 @@ pub struct Cli {
     /// Floor area in square feet (optional). If provided, calculates BHL/SF and BH/SF.
     #[arg(short = 'a', long)]
     pub area: Option<f64>,
+
+    /// Calculate Loan/Rebate metrics (Avg HSPF, Avg SEER, etc.)
+    #[arg(short = 'l', long)]
+    pub loan: bool,
 }
 
-// --- 核心逻辑 ---
 fn parse_user_input(inputs: &[String]) -> Result<HashMap<String, u32>, String> {
     lazy_static! {
         static ref MODEL_QTY_RE: Regex = Regex::new(r"^(.+)x(\d+)$").unwrap();
@@ -239,6 +252,14 @@ fn perform_calculation(
             totals.total_btu_17_max += data.btu_17_max.unwrap_or(0.0) * qty;
             totals.total_btu_17_rated += data.btu_17_rated.unwrap_or(0.0) * qty;
 
+            let btu_95_rated = data.btu_95_rated.unwrap_or(0.0);
+            let hspf = data.hspf.unwrap_or(0.0);
+            let seer = data.seer.unwrap_or(0.0);
+
+            totals.total_btu_95_rated += btu_95_rated * qty;
+            totals.weighted_hspf_sum += btu_95_rated * hspf * qty;
+            totals.weighted_seer_sum += btu_95_rated * seer * qty;
+
             table.add_row(vec![
                 Cell::new(&data.model_number),
                 Cell::new(count).set_alignment(CellAlignment::Center),
@@ -283,7 +304,7 @@ fn print_summary_table(totals: &CalculationTotals, design_temp: f64) {
     add_summary_row("Btu @95 min", totals.total_btu_95_min, false);
     add_summary_row("Btu @5  max", totals.total_btu_5_max, false);
     add_summary_row("Btu @17 max", totals.total_btu_17_max, false);
-    add_summary_row("Btu @17 rated", totals.total_btu_17_rated, false);
+    add_summary_row("Btu @17 rtd", totals.total_btu_17_rated, false);
     add_summary_row(&format!("Btu @{} max", design_temp), totals.total_btu_design_max, false);
     add_summary_row("Design Temp", design_temp, true);
 
@@ -298,9 +319,8 @@ fn print_recommendation(totals: &CalculationTotals) {
     println!("\nRecommend range: {:.0} - {:.0} - {:.0}", min_val, mid_val, max_val);
 }
 
-// --- 新增：面积分析函数 ---
+// --- Add: BHL/SF or BH/SF Analysis ---
 fn print_area_metrics(area: f64, totals: &CalculationTotals, design_temp: f64) {
-    // 1. 计算指标
     // BHL/SF (Residential) = Max Btu @ Design Temp / Area
     let bhl_sf = if area > 0.0 { totals.total_btu_design_max / area } else { 0.0 };
     
@@ -327,7 +347,7 @@ fn print_area_metrics(area: f64, totals: &CalculationTotals, design_temp: f64) {
     println!("{result_table}");
 
     // 2. 打印 Residential 参考表
-    println!("\n🏠 Residential Reference (BHL/SF)");
+    println!("\nResidential Reference (BHL/SF)");
     let mut res_table = Table::new();
     res_table.load_preset(presets::UTF8_FULL);
     res_table.set_header(vec!["Year Built", "Min BHL/SF", "Max BHL/SF"]);
@@ -347,7 +367,7 @@ fn print_area_metrics(area: f64, totals: &CalculationTotals, design_temp: f64) {
     println!("{res_table}");
 
     // 3. 打印 SMB 参考表
-    println!("\n🏢 SMB Reference (BH/SF)");
+    println!("\nSMB Reference (BH/SF)");
     let mut smb_table = Table::new();
     smb_table.load_preset(presets::UTF8_FULL);
     smb_table.set_header(vec!["Building Sector", "Min BH/SF", "Max BH/SF"]);
@@ -376,6 +396,50 @@ fn print_area_metrics(area: f64, totals: &CalculationTotals, design_temp: f64) {
     println!("{smb_table}");
 }
 
+// --- 新增：Loan/Rebate 分析函数 ---
+fn print_loan_metrics(totals: &CalculationTotals) {
+    println!("\n--- For Loan Energy Saving Calculator ---");
+
+    let avg_hspf = if totals.total_btu_95_rated > 0.0 {
+        (totals.weighted_hspf_sum / totals.total_btu_95_rated) * 0.9 - 0.00000000000002
+    } else {
+        0.0
+    };
+
+    let avg_seer = if totals.total_btu_95_rated > 0.0 {
+        totals.weighted_seer_sum / totals.total_btu_95_rated
+    } else {
+        0.0
+    };
+
+    let mut table = Table::new();
+    table.load_preset(presets::UTF8_FULL);
+    // table.set_header(vec!["Metric", "Total / Weighted Avg"]);
+
+    table.add_row(vec![
+        Cell::new("Btu@95 rtd"),
+        Cell::new(format!("{:.0}", totals.total_btu_95_rated)).set_alignment(CellAlignment::Right),
+    ]);
+    table.add_row(vec![
+        Cell::new("Btu@5  max"),
+        Cell::new(format!("{:.0}", totals.total_btu_5_max)).set_alignment(CellAlignment::Right),
+    ]);
+    table.add_row(vec![
+        Cell::new("Btu@17 max"),
+        Cell::new(format!("{:.0}", totals.total_btu_17_max)).set_alignment(CellAlignment::Right),
+    ]);
+    table.add_row(vec![
+        Cell::new("Avg HSPF").fg(Color::Yellow).add_attribute(Attribute::Bold),
+        Cell::new(format!("{:.1}", avg_hspf)).set_alignment(CellAlignment::Right).add_attribute(Attribute::Bold),
+    ]);
+    table.add_row(vec![
+        Cell::new("Avg SEER").fg(Color::Yellow).add_attribute(Attribute::Bold),
+        Cell::new(format!("{:.1}", avg_seer)).set_alignment(CellAlignment::Right).add_attribute(Attribute::Bold),
+    ]);
+
+    println!("{table}");
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     
@@ -390,6 +454,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 如果用户输入了面积参数，则打印额外分析
     if let Some(area) = cli.area {
         print_area_metrics(area, &totals, cli.design_temp);
+    }
+
+    if cli.loan {
+        print_loan_metrics(&totals);
     }
 
     Ok(())
