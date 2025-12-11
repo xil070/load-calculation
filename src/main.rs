@@ -212,7 +212,7 @@ fn perform_calculation(
     let mut totals = CalculationTotals::default();
     
     let mut table = Table::new();
-    table.load_preset(presets::UTF8_FULL); 
+    table.load_preset(presets::UTF8_FULL_CONDENSED); 
     
     let header_design_label = format!("Btu@{} max", design_temp);
     table.set_header(vec![
@@ -287,7 +287,7 @@ fn perform_calculation(
 
 fn print_summary_table(totals: &CalculationTotals, design_temp: f64) {
     let mut table = Table::new();
-    table.load_preset(presets::UTF8_FULL);
+    table.load_preset(presets::UTF8_FULL_CONDENSED);
 
     let mut add_summary_row = |label: &str, value: f64, is_temp: bool| {
         let val_str = if is_temp {
@@ -320,7 +320,7 @@ fn print_recommendation(totals: &CalculationTotals) {
 }
 
 // --- Add: BHL/SF or BH/SF Analysis ---
-fn print_area_metrics(area: f64, totals: &CalculationTotals, design_temp: f64) {
+fn print_area_metrics(area: f64, totals: &CalculationTotals) {
     // BHL/SF (Residential) = Max Btu @ Design Temp / Area
     let bhl_sf = if area > 0.0 { totals.total_btu_design_max / area } else { 0.0 };
     
@@ -329,30 +329,27 @@ fn print_area_metrics(area: f64, totals: &CalculationTotals, design_temp: f64) {
 
     println!("\n --- BHL/SF or BH/SF Analysis ({:.0} sq ft) ---", area);
     
-    // 打印用户计算出的数值
     let mut result_table = Table::new();
-    result_table.load_preset(presets::UTF8_FULL);
-    result_table.set_header(vec!["Metric", "Formula", "Your Value"]);
+    result_table.load_preset(presets::UTF8_FULL_CONDENSED);
+    // result_table.set_header(vec!["Metric", "Formula", "Your Value"]);
     
     result_table.add_row(vec![
         Cell::new("Residential BHL/SF").fg(Color::Green).add_attribute(Attribute::Bold),
-        Cell::new(format!("Max Btu @ {} / SF", design_temp)),
+        // Cell::new(format!("Max Btu @ {} / SF", design_temp)),
         Cell::new(format!("{:.2}", bhl_sf)).add_attribute(Attribute::Bold),
     ]);
     result_table.add_row(vec![
         Cell::new("SMB BH/SF").fg(Color::Cyan).add_attribute(Attribute::Bold),
-        Cell::new("Rated Btu @ 17 / SF"),
+        // Cell::new("Rated Btu @ 17 / SF"),
         Cell::new(format!("{:.2}", bh_sf)).add_attribute(Attribute::Bold),
     ]);
     println!("{result_table}");
 
-    // 2. 打印 Residential 参考表
     println!("\nResidential Reference (BHL/SF)");
     let mut res_table = Table::new();
-    res_table.load_preset(presets::UTF8_FULL);
+    res_table.load_preset(presets::UTF8_FULL_CONDENSED);
     res_table.set_header(vec!["Year Built", "Min BHL/SF", "Max BHL/SF"]);
     
-    // 这里是示例参考数据，您可以根据实际业务标准修改
     let res_data = vec![
         ("Pre-1945 (Uninsulated)", "30", "45"),
         ("Pre-1945 (Insulated)", "25", "45"),
@@ -366,13 +363,11 @@ fn print_area_metrics(area: f64, totals: &CalculationTotals, design_temp: f64) {
     }
     println!("{res_table}");
 
-    // 3. 打印 SMB 参考表
     println!("\nSMB Reference (BH/SF)");
     let mut smb_table = Table::new();
-    smb_table.load_preset(presets::UTF8_FULL);
+    smb_table.load_preset(presets::UTF8_FULL_CONDENSED);
     smb_table.set_header(vec!["Building Sector", "Min BH/SF", "Max BH/SF"]);
 
-    // 示例参考数据
     let smb_data = vec![
         ("Restaurant", "20", "30"),
         ("Big Box Retail", "15", "35"),
@@ -413,7 +408,8 @@ fn print_loan_metrics(totals: &CalculationTotals) {
     };
 
     let mut table = Table::new();
-    table.load_preset(presets::UTF8_FULL);
+    // table.load_preset(presets::UTF8_FULL);
+    table.load_preset(presets::UTF8_FULL_CONDENSED);
     // table.set_header(vec!["Metric", "Total / Weighted Avg"]);
 
     table.add_row(vec![
@@ -453,7 +449,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 如果用户输入了面积参数，则打印额外分析
     if let Some(area) = cli.area {
-        print_area_metrics(area, &totals, cli.design_temp);
+        print_area_metrics(area, &totals);
     }
 
     if cli.loan {
