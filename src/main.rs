@@ -3,10 +3,13 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use regex::Regex;
 use lazy_static::lazy_static;
-use comfy_table::{Table, presets, Attribute, Cell, CellAlignment, Color};
+// 引入 ContentArrangement 用于自适应宽度，引入 Color 用于颜色
+use comfy_table::{Table, presets, Attribute, Cell, CellAlignment, Color, ContentArrangement};
 
+// --- 0. 嵌入数据 ---
 const CSV_DATA: &str = include_str!("../data/equipmentInfo.csv");
 
+// --- 1. 增强版反序列化助手 ---
 fn deserialize_f64_custom<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -37,6 +40,7 @@ where
     }
 }
 
+// --- 2. 数据模型 ---
 #[derive(Debug, Deserialize, Clone)]
 pub struct MachineData {
     #[serde(rename = "model number")]
@@ -204,23 +208,43 @@ fn load_machine_data() -> Result<HashMap<String, MachineData>, Box<dyn std::erro
     Ok(data_map)
 }
 
+// 辅助函数：统一创建表格样式 (更清爽的水平线风格)
+fn create_styled_table() -> Table {
+    let mut table = Table::new();
+    table.load_preset(presets::UTF8_FULL_CONDENSED);
+    table.set_content_arrangement(ContentArrangement::Dynamic);
+    table
+}
+
+// 辅助函数：打印带颜色的分节标题
+fn print_section_title(title: &str, color: Color) {
+    println!();
+    let mut table = Table::new();
+    table.load_preset(presets::NOTHING);
+    table.add_row(vec![
+        Cell::new(format!("=== {} ===", title)).add_attribute(Attribute::Bold).fg(color)
+    ]);
+    println!("{table}");
+}
+
 fn perform_calculation(
     user_input: &HashMap<String, u32>,
     machine_data: &HashMap<String, MachineData>,
     design_temp: f64,
 ) -> CalculationTotals {
+    print_section_title("LOAD CALCULATION", Color::Blue);
+
     let mut totals = CalculationTotals::default();
-    
-    let mut table = Table::new();
-    table.load_preset(presets::UTF8_FULL_CONDENSED); 
+    let mut table = create_styled_table();
     
     let header_design_label = format!("Btu@{} max", design_temp);
+    
     table.set_header(vec![
-        Cell::new("Model").add_attribute(Attribute::Bold),
-        Cell::new("Qty").add_attribute(Attribute::Bold),
-        Cell::new("AHRI#").add_attribute(Attribute::Bold),
-        Cell::new("Btu@95 min").add_attribute(Attribute::Bold),
-        Cell::new(&header_design_label).add_attribute(Attribute::Bold),
+        Cell::new("Model"),
+        Cell::new("Qty"),
+        Cell::new("AHRI#"),
+        Cell::new("Btu@95 min"),
+        Cell::new(&header_design_label),
     ]);
 
     let mut canonical_counts: HashMap<String, u32> = HashMap::new();
@@ -272,43 +296,36 @@ fn perform_calculation(
 
     for (identifier, count) in not_found_inputs {
         table.add_row(vec![
-            Cell::new(identifier).add_attribute(Attribute::Dim),
+            Cell::new(identifier).add_attribute(Attribute::Dim).fg(Color::Red), // 红色高亮
             Cell::new(count).set_alignment(CellAlignment::Center),
-            Cell::new("NOT FOUND").set_alignment(CellAlignment::Center),
+            Cell::new("NOT FOUND").set_alignment(CellAlignment::Center).fg(Color::Red),
             Cell::new("-"),
             Cell::new("-"),
         ]);
     }
 
     println!("{table}");
-    
     totals
 }
 
 fn print_summary_table(totals: &CalculationTotals, design_temp: f64) {
-    let mut table = Table::new();
-    table.load_preset(presets::UTF8_FULL_CONDENSED);
+    let mut table = create_styled_table();
 
-    let mut add_summary_row = |label: &str, value: f64, is_temp: bool| {
-        let val_str = if is_temp {
-            format!("{:.0}", value)
-        } else {
-            format!("{:.0}", value)
-        };
+    let mut add_summary_row = |label: &str, value: f64| {
         table.add_row(vec![
             Cell::new(label),
-            Cell::new(val_str).set_alignment(CellAlignment::Right),
+            Cell::new(format!("{:.0}", value)).set_alignment(CellAlignment::Right),
         ]);
     };
 
-    add_summary_row("Btu @95 min", totals.total_btu_95_min, false);
-    add_summary_row("Btu @5  max", totals.total_btu_5_max, false);
-    add_summary_row("Btu @17 max", totals.total_btu_17_max, false);
-    add_summary_row("Btu @17 rtd", totals.total_btu_17_rated, false);
-    add_summary_row(&format!("Btu @{} max", design_temp), totals.total_btu_design_max, false);
-    add_summary_row("Design Temp", design_temp, true);
+    add_summary_row("Btu @95 min", totals.total_btu_95_min);
+    add_summary_row("Btu @5  max", totals.total_btu_5_max);
+    add_summary_row("Btu @17 max", totals.total_btu_17_max);
+    add_summary_row("Btu @17 rtd", totals.total_btu_17_rated);
+    add_summary_row(&format!("Btu @{} max", design_temp), totals.total_btu_design_max);
+    add_summary_row("Design Temp", design_temp);
 
-    println!("\n{table}");
+    println!("{table}");
 }
 
 fn print_recommendation(totals: &CalculationTotals) {
@@ -316,40 +333,50 @@ fn print_recommendation(totals: &CalculationTotals) {
     let mid_val = max_val / 1.1;
     let min_val = max_val / 1.2;
 
-    println!("\nRecommend range: {:.0} - {:.0} - {:.0}", min_val, mid_val, max_val);
+    println!("\n Recommend range: {:.0} - {:.0} - {:.0}", min_val, mid_val, max_val);
 }
 
 // --- Add: BHL/SF or BH/SF Analysis ---
+// 恢复 design_temp 参数以显示完整公式
 fn print_area_metrics(area: f64, totals: &CalculationTotals) {
-    // BHL/SF (Residential) = Max Btu @ Design Temp / Area
+    print_section_title("BHL/SF or BH/SF ANALYSIS", Color::Magenta);
+    println!(" {:.0} sq ft", area);
+
+    // 1. User Result
     let bhl_sf = if area > 0.0 { totals.total_btu_design_max / area } else { 0.0 };
-    
-    // BH/SF (SMB) = Rated Btu @ 17 / Area
     let bh_sf = if area > 0.0 { totals.total_btu_17_rated / area } else { 0.0 };
 
-    println!("\n --- BHL/SF or BH/SF Analysis ({:.0} sq ft) ---", area);
-    
-    let mut result_table = Table::new();
-    result_table.load_preset(presets::UTF8_FULL_CONDENSED);
-    // result_table.set_header(vec!["Metric", "Formula", "Your Value"]);
+    let mut result_table = create_styled_table();
+    // result_table.set_header(vec![
+    //     Cell::new("Metric").add_attribute(Attribute::Bold),
+    //     Cell::new("Formula").add_attribute(Attribute::Bold),
+    //     Cell::new("Your Value").add_attribute(Attribute::Bold),
+    // ]);
     
     result_table.add_row(vec![
-        Cell::new("Residential BHL/SF").fg(Color::Green).add_attribute(Attribute::Bold),
-        // Cell::new(format!("Max Btu @ {} / SF", design_temp)),
+        Cell::new("RES BHL/SF").fg(Color::Green).add_attribute(Attribute::Bold),
+        // Cell::new(format!("Max Btu @ {} / Area", design_temp)),
         Cell::new(format!("{:.2}", bhl_sf)).add_attribute(Attribute::Bold),
     ]);
     result_table.add_row(vec![
         Cell::new("SMB BH/SF").fg(Color::Cyan).add_attribute(Attribute::Bold),
-        // Cell::new("Rated Btu @ 17 / SF"),
+        // Cell::new("Rated Btu @ 17 / Area"),
         Cell::new(format!("{:.2}", bh_sf)).add_attribute(Attribute::Bold),
     ]);
     println!("{result_table}");
 
-    println!("\nResidential Reference (BHL/SF)");
-    let mut res_table = Table::new();
-    res_table.load_preset(presets::UTF8_FULL_CONDENSED);
-    res_table.set_header(vec!["Year Built", "Min BHL/SF", "Max BHL/SF"]);
+    // 2. Combined Reference Table (合并参考表格)
+    print_section_title("Con Edison Recommended Range", Color::DarkGrey);
     
+    let mut ref_table = create_styled_table();
+    ref_table.set_header(vec![
+        Cell::new("Type").fg(Color::DarkGrey),
+        Cell::new("Category / Year").fg(Color::DarkGrey),
+        Cell::new("Min").fg(Color::DarkGrey),
+        Cell::new("Max").fg(Color::DarkGrey)
+    ]);
+    
+    // Residential Data
     let res_data = vec![
         ("Pre-1945 (Uninsulated)", "30", "45"),
         ("Pre-1945 (Insulated)", "25", "45"),
@@ -358,16 +385,17 @@ fn print_area_metrics(area: f64, totals: &CalculationTotals) {
         ("2007 or later", "15", "25"),
     ];
 
-    for (year, min, max) in res_data {
-        res_table.add_row(vec![year, min, max]);
+    for (i, (year, min, max)) in res_data.iter().enumerate() {
+        let type_cell = if i == 0 { Cell::new("Residential").fg(Color::Green) } else { Cell::new("") };
+        ref_table.add_row(vec![
+            type_cell,
+            Cell::new(year).fg(Color::DarkGrey),
+            Cell::new(min).fg(Color::DarkGrey),
+            Cell::new(max).fg(Color::DarkGrey),
+        ]);
     }
-    println!("{res_table}");
 
-    println!("\nSMB Reference (BH/SF)");
-    let mut smb_table = Table::new();
-    smb_table.load_preset(presets::UTF8_FULL_CONDENSED);
-    smb_table.set_header(vec!["Building Sector", "Min BH/SF", "Max BH/SF"]);
-
+    // SMB Data
     let smb_data = vec![
         ("Restaurant", "20", "30"),
         ("Big Box Retail", "15", "35"),
@@ -377,7 +405,7 @@ fn print_area_metrics(area: f64, totals: &CalculationTotals) {
         ("Religious Institutions", "20", "35"),
         ("Grocery Stores", "20", "35"),
         ("Auto Repair", "25", "45"),
-        ("Hospital and Healthcare", "20", "40"),
+        ("Hospital & Healthcare", "20", "40"),
         ("Assembly", "20", "30"),
         ("Fitness Centers", "20", "35"),
         ("Warehouses", "8", "20"),
@@ -385,15 +413,20 @@ fn print_area_metrics(area: f64, totals: &CalculationTotals) {
         ("Hotels", "15", "30"),
     ];
 
-    for (sector, min, max) in smb_data {
-        smb_table.add_row(vec![sector, min, max]);
+    for (i, (sector, min, max)) in smb_data.iter().enumerate() {
+        let type_cell = if i == 0 { Cell::new("SMB").fg(Color::Cyan) } else { Cell::new("") };
+        ref_table.add_row(vec![
+            type_cell,
+            Cell::new(sector).fg(Color::DarkGrey),
+            Cell::new(min).fg(Color::DarkGrey),
+            Cell::new(max).fg(Color::DarkGrey),
+        ]);
     }
-    println!("{smb_table}");
+    println!("{ref_table}");
 }
 
-// --- 新增：Loan/Rebate 分析函数 ---
 fn print_loan_metrics(totals: &CalculationTotals) {
-    println!("\n--- For Loan Energy Saving Calculator ---");
+    print_section_title("Loan Energy Saving Calculator", Color::Yellow);
 
     let avg_hspf = if totals.total_btu_95_rated > 0.0 {
         (totals.weighted_hspf_sum / totals.total_btu_95_rated) * 0.9 - 0.00000000000002
@@ -407,11 +440,8 @@ fn print_loan_metrics(totals: &CalculationTotals) {
         0.0
     };
 
-    let mut table = Table::new();
-    // table.load_preset(presets::UTF8_FULL);
-    table.load_preset(presets::UTF8_FULL_CONDENSED);
-    // table.set_header(vec!["Metric", "Total / Weighted Avg"]);
-
+    let mut table = create_styled_table();
+    
     table.add_row(vec![
         Cell::new("Btu@95 rtd"),
         Cell::new(format!("{:.0}", totals.total_btu_95_rated)).set_alignment(CellAlignment::Right),
@@ -447,7 +477,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     print_summary_table(&totals, cli.design_temp);
     print_recommendation(&totals);
 
-    // 如果用户输入了面积参数，则打印额外分析
     if let Some(area) = cli.area {
         print_area_metrics(area, &totals);
     }
